@@ -1,0 +1,157 @@
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,14 @@
++# Smart Campus room availability
++
++A student checks one fictional room on a fixed day. The React form and frozen demo fixture (now 540, booking 600–660) are in src/App.jsx. The shared, pure decision belongs in src/booking.js. The two existing test files cover the rules and form. Keep the Boolean canBook(input) interface.
++
++## Rules
++- AC1 requires finite numeric minutes, 0 ≤ start < end ≤ 1440 and start strictly after now. The end field accepts 24:00.
++- AC2 permits 120 minutes and rejects 121. AC3 rejects a blocked room.
++- AC4 treats bookings as half-open intervals. An actual overlap conflicts. Touching at either endpoint is allowed.
++- AC5 preserves booking contents, object identities and order. Checking never creates a reservation.
++- AC6 preserves the labels, feedback wording and priority, and desktop and mobile layout.
++- Keep the existing scope. Exclude login, backend, storage and extra policies. Use at most two justified patterns. Prefer a small pure function. A single fixture shape needs no Adapter.
++
++## Commands
++From this directory, install dependencies with npm ci. Run npm test for the full suite, npm run build for a production build and npm run dev for the local preview. Keep every existing assertion. Add focused regression cases for behavior touched by the refactor. Report the files changed, the reason for each change and the observed test results. Explicitly read this file before editing.
+--- a/scripts/replay.mjs
++++ b/scripts/replay.mjs
+@@ -19,7 +19,7 @@
+   ['bug-a-failing', clean.replace('start < booking.end && end > booking.start', 'start <= booking.end && end >= booking.start'), ['src/booking.test.js'], 1],
+   ['bug-a-fixed-target', clean, ['src/booking.test.js', '-t', 'T01|T08'], 0],
+   ['bug-a-fixed-full', clean, [], 0],
+-  ['bug-b-failing', clean.replace('  return !bookings.some', '  bookings.sort((a, b) => a.start - b.start);\n  return !bookings.some'), ['src/booking.test.js'], 1],
++  ['bug-b-failing', clean.replace('  if (bookings.some', '  bookings.sort((a, b) => a.start - b.start);\n  if (bookings.some'), ['src/booking.test.js'], 1],
+   ['bug-b-fixed-target', clean, ['src/booking.test.js', '-t', 'T15|T25'], 0],
+   ['bug-b-fixed-full', clean, [], 0],
+ ];
+--- a/scripts/validate-package.mjs
++++ /dev/null
+@@ -1,21 +0,0 @@
+-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+-import { createHash } from 'node:crypto';
+-import path from 'node:path';
+-import { fileURLToPath } from 'node:url';
+-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+-const skill = path.join(root, 'bug-detector');
+-const text = readFileSync(path.join(skill, 'SKILL.md'), 'utf8');
+-const checks = {
+-  'uppercase exact SKILL.md filename': readdirSync(skill).includes('SKILL.md') && !existsSync(path.join(skill, 'SKILL.md.txt')),
+-  'UTF-8 round trip': Buffer.from(text, 'utf8').equals(readFileSync(path.join(skill, 'SKILL.md'))),
+-  'YAML delimiters': /^---\r?\n[\s\S]*?\r?\n---\r?\n/.test(text),
+-  'required name': /^name: bug-detector$/m.test(text),
+-  'description has usage trigger': /^description: .+Use when.+$/m.test(text),
+-  'ChatGPT metadata present': existsSync(path.join(skill, 'agents/openai.yaml')),
+-  'fixed source equals saved clean baseline': readFileSync(path.join(root, 'smart-campus/src/booking.js'), 'utf8') === readFileSync(path.join(root, 'evidence/snapshots/clean-booking.js'), 'utf8'),
+-  'regression tests unchanged': readFileSync(path.join(root, 'smart-campus/src/booking.test.js'), 'utf8') === readFileSync(path.join(root, 'evidence/snapshots/original-booking.test.js'), 'utf8'),
+-};
+-for (const [name, pass] of Object.entries(checks)) console.log(`${pass ? 'PASS' : 'FAIL'} ${name}`);
+-console.log('Test SHA-256:', createHash('sha256').update(readFileSync(path.join(root, 'smart-campus/src/booking.test.js'))).digest('hex'));
+-console.log('These structural checks do not establish platform installation or improved model performance.');
+-process.exitCode = Object.values(checks).every(Boolean) ? 0 : 1;
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -1,5 +1,5 @@
+ import React, { useState } from 'react';
+-import { canBook } from './booking.js';
++import { bookingIssue } from './booking.js';
+ import './styles.css';
+ 
+ export const NOW = 540;
+@@ -11,6 +11,15 @@
+   return hours < 24 && minutes < 60 ? hours * 60 + minutes : NaN;
+ }
+ 
++const issueMessages = {
++  invalidTime: 'Enter both a valid start time and end time.',
++  interval: 'End time must be later than start time on the same day.',
++  past: 'Start time must be after the fixed current time, 09:00.',
++  duration: 'Choose a duration of 120 minutes or less.',
++  blocked: 'Room A-101 is blocked. Turn off the demo block to check it.',
++  overlap: 'This time overlaps the existing 10:00–11:00 booking. Choose another time.',
++};
++
+ export default function App() {
+   const [start, setStart] = useState('11:00');
+   const [end, setEnd] = useState('12:00');
+@@ -19,15 +28,17 @@
+   function change(setter, value) { setter(value); setResult(null); }
+   function check(event) {
+     event.preventDefault();
+-    const s = toMinutes(start), e = toMinutes(end, true);
+-    const available = canBook({ start: s, end: e, now: NOW, blocked, bookings: SAMPLE_BOOKINGS });
+-    let detail = 'This time overlaps the existing 10:00–11:00 booking. Choose another time.';
+-    if (!Number.isFinite(s) || !Number.isFinite(e)) detail = 'Enter both a valid start time and end time.';
+-    else if (s >= e) detail = 'End time must be later than start time on the same day.';
+-    else if (s <= NOW) detail = 'Start time must be after the fixed current time, 09:00.';
+-    else if (e - s > 120) detail = 'Choose a duration of 120 minutes or less.';
+-    else if (blocked) detail = 'Room A-101 is blocked. Turn off the demo block to check it.';
+-    else if (available) detail = `${start}–${end} is free. This check does not create a booking.`;
++    const issue = bookingIssue({
++      start: toMinutes(start),
++      end: toMinutes(end, true),
++      now: NOW,
++      blocked,
++      bookings: SAMPLE_BOOKINGS,
++    });
++    const available = issue === null;
++    const detail = available
++      ? `${start}–${end} is free. This check does not create a booking.`
++      : issueMessages[issue];
+     setResult({ available, detail });
+   }
+   return <div className="app-shell">
+--- a/src/booking.js
++++ b/src/booking.js
+@@ -1,8 +1,19 @@
+-/** Numeric minutes on one fictional day. Intervals are [start, end). */
+-export function canBook({ start, end, now, blocked, bookings }) {
+-  if (![start, end, now].every(Number.isFinite)) return false;
+-  if (start < 0 || end > 1440 || start >= end || start <= now) return false;
+-  if (end - start > 120) return false;
+-  if (blocked) return false;
+-  return !bookings.some(booking => start < booking.end && end > booking.start);
++/** First reason a same-day request fails, or null when the room is available. */
++export function bookingIssue({ start, end, now, blocked, bookings }) {
++  if (![start, end, now].every(Number.isFinite)) return 'invalidTime';
++  if (start < 0 || end > 1440) return 'invalidTime';
++  if (start >= end) return 'interval';
++  if (start <= now) return 'past';
++  if (end - start > 120) return 'duration';
++  if (blocked) return 'blocked';
++
++  // Intervals are [start, end), so equality at either endpoint is allowed.
++  if (bookings.some(booking => start < booking.end && end > booking.start)) {
++    return 'overlap';
++  }
++  return null;
+ }
++
++export function canBook(request) {
++  return bookingIssue(request) === null;
++}
+--- /dev/null
++++ b/src/feedback-priority.test.jsx
+@@ -0,0 +1,21 @@
++import React from 'react';
++import { it, expect } from 'vitest';
++import { fireEvent, render, screen } from '@testing-library/react';
++import App from './App.jsx';
++
++it.each([
++  ['reversed interval before past start', '08:00', '07:00', 'End time must be later than start time on the same day.'],
++  ['past start before duration and room block', '08:00', '12:00', 'Start time must be after the fixed current time, 09:00.'],
++  ['121 minutes before room block', '11:00', '13:01', 'Choose a duration of 120 minutes or less.'],
++  ['room block before overlapping booking', '10:15', '10:45', 'Room A-101 is blocked. Turn off the demo block to check it.'],
++])('Preserves feedback priority: %s', (_, start, end, expectedMessage) => {
++  render(<App />);
++  fireEvent.change(screen.getByLabelText('Start time'), { target: { value: start } });
++  fireEvent.change(screen.getByLabelText('End time'), { target: { value: end } });
++  fireEvent.click(screen.getByRole('checkbox'));
++  fireEvent.click(screen.getByRole('button', { name: /check availability/i }));
++  const status = screen.getByRole('status');
++  expect(status).toHaveTextContent('Unavailable');
++  expect(status).toHaveTextContent(expectedMessage);
++  expect(screen.getByText('10:00–11:00')).toBeVisible();
++});
